@@ -7,6 +7,45 @@ import UsersList from './UsersList'
 const UPDATE_INTERVAL_MS = 10_000
 const HISTORY_SIZE = 3
 const TOAST_DURATION_MS = 4_000
+const MOCK_UPDATE_MS = 2_000
+
+// Mock users: angle from north (deg), starting distance (km), approach speed (km/h)
+const MOCK_CONFIGS = [
+  { id: 'mock-0', name: 'Alice',   angleDeg: 45,  distKm: 1.2, speedKmh: 18 },
+  { id: 'mock-1', name: 'Bob',     angleDeg: 200, distKm: 0.7, speedKmh: 6  },
+  { id: 'mock-2', name: 'Charlie', angleDeg: 300, distKm: 2.1, speedKmh: 28 },
+]
+
+function buildMockUsers(ownPos) {
+  const now = Date.now()
+  const expires = new Date(now + 4 * 3600_000).toISOString()
+  const cosLat = Math.cos(ownPos[0] * Math.PI / 180)
+
+  return MOCK_CONFIGS.map(({ id, name, angleDeg, distKm, speedKmh }) => {
+    const angle = angleDeg * Math.PI / 180
+    const distM = distKm * 1000
+    // Offset from ownPos in degrees
+    const latOff = Math.cos(angle) * distM / 111_320
+    const lngOff = Math.sin(angle) * distM / (111_320 * cosLat)
+    const lat = ownPos[0] + latOff
+    const lng = ownPos[1] + lngOff
+    // Velocity toward ownPos in deg/s
+    const speedMs = speedKmh / 3.6
+    const vLat = -latOff * speedMs / distM
+    const vLng = -lngOff * speedMs / distM
+    // Pre-seed two history points so ETA is visible immediately
+    return {
+      id, name, lat, lng,
+      expires_at: expires,
+      updated_at: new Date().toISOString(),
+      isMock: true, vLat, vLng,
+      history: [
+        { lat: lat - vLat * MOCK_UPDATE_MS / 1000, lng: lng - vLng * MOCK_UPDATE_MS / 1000, ts: now - MOCK_UPDATE_MS },
+        { lat, lng, ts: now },
+      ],
+    }
+  })
+}
 
 /** Re-centers the map on first GPS fix only */
 function MapFlyTo({ position }) {
@@ -62,6 +101,7 @@ export default function MapView({ session, onStop }) {
   const [activeUserId, setActiveUserId] = useState(null)
   const [toasts, setToasts] = useState([])
   const [showUsersList, setShowUsersList] = useState(false)
+  const [mockActive, setMockActive] = useState(false)
   const ownPosRef = useRef(null)
   const mapRef = useRef(null)
   const markersRef = useRef({}) // userId → Leaflet marker instance
@@ -74,6 +114,62 @@ export default function MapView({ session, onStop }) {
     const id = Date.now() + Math.random()
     setToasts(prev => [...prev, { id, message, color, userPos, userId }])
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), TOAST_DURATION_MS)
+  }
+
+  // ── 5. Mock user movement ─────────────────────────────────────────────────
+  useEffect(() => {
+    if (!mockActive) return
+    const id = setInterval(() => {
+      setOthers(prev => {
+        const next = { ...prev }
+        MOCK_CONFIGS.forEach(({ id: mid }) => {
+          const u = next[mid]
+          if (!u) return
+          const dt = MOCK_UPDATE_MS / 1000
+          const lat = u.lat + u.vLat * dt
+          const lng = u.lng + u.vLng * dt
+          next[mid] = {
+            ...u, lat, lng,
+            updated_at: new Date().toISOString(),
+            history: [...u.history.slice(-(HISTORY_SIZE - 1)), { lat, lng, ts: Date.now() }],
+          }
+        })
+        return next
+      })
+    }, MOCK_UPDATE_MS)
+    return () => clearInterval(id)
+  }, [mockActive])
+
+  // ── Toggle mock demo users ────────────────────────────────────────────────
+  const toggleMock = () => {
+    if (!ownPos) return
+    if (mockActive) {
+      setMockActive(false)
+      setOthers(prev => {
+        const next = { ...prev }
+        MOCK_CONFIGS.forEach(({ id }) => delete next[id])
+        return next
+      })
+      if (MOCK_CONFIGS.some(c => c.id === activeUserId)) setActiveUserId(null)
+    } else {
+      const mocks = buildMockUsers(ownPos)
+      setOthers(prev => {
+        const next = { ...prev }
+        mocks.forEach(u => { next[u.id] = u })
+        return next
+      })
+      setMockActive(true)
+    }
+  }
+
+  // ── Remove a user (long-press) ────────────────────────────────────────────
+  const handleRemoveUser = async (user) => {
+    if (user.isMock) {
+      setOthers(prev => { const n = { ...prev }; delete n[user.id]; return n })
+      if (activeUserId === user.id) setActiveUserId(null)
+    } else {
+      await supabase.from('locations').delete().eq('id', user.id)
+    }
   }
 
   const selectUser = (userId, userPos) => {
@@ -208,7 +304,10 @@ export default function MapView({ session, onStop }) {
         style={{ paddingTop: 'max(12px, env(safe-area-inset-top))', paddingBottom: 12 }}
       >
         <div className="flex items-center gap-3">
-          <span className="text-white font-bold text-lg tracking-tight">TrackTogether</span>
+          <span
+            className="text-white font-bold text-lg tracking-tight cursor-default select-none"
+            onClick={toggleMock}
+          >TrackTogether</span>
           <button
             onClick={() => setShowUsersList(true)}
             className="flex items-center gap-1.5 bg-green-500/15 hover:bg-green-500/25 active:bg-green-500/30 text-green-400 text-xs font-semibold px-2.5 py-1 rounded-full border border-green-500/25 transition-colors"
@@ -292,6 +391,7 @@ export default function MapView({ session, onStop }) {
             onMarkerReady={m => { markersRef.current[user.id] = m }}
             onPopupOpen={() => setActiveUserId(user.id)}
             onPopupClose={() => setActiveUserId(null)}
+            onRemove={() => handleRemoveUser(user)}
           />
         ))}
       </MapContainer>
