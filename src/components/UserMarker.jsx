@@ -61,11 +61,12 @@ function formatETA(secs) {
  * Needs at least 2 points separated by ≥ 2 s.
  */
 function computeVelocity(history) {
-  if (!history || history.length < 2) return null
+  const zero = { vx: 0, vy: 0 }
+  if (!history || history.length < 2) return zero
   const p1 = history[history.length - 2]
   const p2 = history[history.length - 1]
   const dt = (p2.ts - p1.ts) / 1000
-  if (dt < 2) return null
+  if (dt < 2) return zero
   const latMid = (p1.lat + p2.lat) / 2
   const mPerLng = Math.cos(latMid * Math.PI / 180) * 111_320
   return {
