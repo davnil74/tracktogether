@@ -22,23 +22,29 @@ function MapFlyTo({ position }) {
   return null
 }
 
+/** Exposes the Leaflet map instance via a ref */
+function MapRefCapture({ mapRef }) {
+  mapRef.current = useMap()
+  return null
+}
+
 /** Stacked join/leave toasts rendered above the map */
-function Toasts({ toasts }) {
+function Toasts({ toasts, onToastClick }) {
   if (!toasts.length) return null
   return (
-    <div className="absolute left-1/2 -translate-x-1/2 z-[1001] flex flex-col items-center gap-2 pointer-events-none"
+    <div
+      className="absolute left-1/2 -translate-x-1/2 z-[1001] flex flex-col items-center gap-2"
       style={{ top: 'calc(max(12px, env(safe-area-inset-top)) + 56px)' }}
     >
       {toasts.map(t => (
         <div
           key={t.id}
-          className="flex items-center gap-2 bg-gray-900/95 border border-gray-700 text-white text-sm font-medium px-4 py-2.5 rounded-2xl shadow-xl backdrop-blur-md animate-toast"
+          onClick={() => onToastClick(t)}
+          className="flex items-center gap-2 bg-gray-900/95 border border-gray-700 text-white text-sm font-medium px-4 py-2.5 rounded-2xl shadow-xl backdrop-blur-md animate-toast cursor-pointer hover:bg-gray-800/95 active:scale-95 transition-transform select-none"
         >
-          <span
-            className="w-2 h-2 rounded-full shrink-0"
-            style={{ background: t.color }}
-          />
+          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: t.color }} />
           {t.message}
+          <span className="text-gray-500 text-xs ml-1">Tap to view</span>
         </div>
       ))}
     </div>
@@ -55,15 +61,26 @@ export default function MapView({ session, onStop }) {
   const [activeUserId, setActiveUserId] = useState(null)
   const [toasts, setToasts] = useState([])
   const ownPosRef = useRef(null)
+  const mapRef = useRef(null)
   // Track which IDs were present at mount so we don't toast for them
   const initialIdsRef = useRef(null)
 
   useEffect(() => { ownPosRef.current = ownPos }, [ownPos])
 
-  const addToast = (message, color) => {
+  const addToast = (message, color, userPos) => {
     const id = Date.now() + Math.random()
-    setToasts(prev => [...prev, { id, message, color }])
+    setToasts(prev => [...prev, { id, message, color, userPos }])
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), TOAST_DURATION_MS)
+  }
+
+  const handleToastClick = (toast) => {
+    const map = mapRef.current
+    const own = ownPosRef.current
+    if (!map || !toast.userPos) return
+    const bounds = own
+      ? [own, toast.userPos]
+      : [toast.userPos, toast.userPos]
+    map.fitBounds(bounds, { padding: [64, 64], maxZoom: 16, animate: true })
   }
 
   // ── 1. Fetch current users on mount ─────────────────────────────────────
@@ -99,7 +116,8 @@ export default function MapView({ session, onStop }) {
           if (eventType === 'DELETE') {
             setOthers(prev => {
               if (!prev[oldRow.id]) return prev
-              addToast(`${prev[oldRow.id].name} stopped sharing`, '#f87171')
+              const u = prev[oldRow.id]
+              addToast(`${u.name} stopped sharing`, '#f87171', [u.lat, u.lng])
               const next = { ...prev }
               delete next[oldRow.id]
               return next
@@ -113,7 +131,7 @@ export default function MapView({ session, onStop }) {
           setOthers(prev => {
             const isNew = !prev[newRow.id]
             if (isNew && initialIdsRef.current !== null && !initialIdsRef.current.has(newRow.id)) {
-              addToast(`${newRow.name} joined`, '#34d399')
+              addToast(`${newRow.name} joined`, '#34d399', [newRow.lat, newRow.lng])
             }
             const prevHistory = prev[newRow.id]?.history ?? []
             const history = [
@@ -202,7 +220,7 @@ export default function MapView({ session, onStop }) {
       </div>
 
       {/* ── Join / leave toasts ── */}
-      <Toasts toasts={toasts} />
+      <Toasts toasts={toasts} onToastClick={handleToastClick} />
 
       {/* ── Map ── */}
       <MapContainer
@@ -211,6 +229,7 @@ export default function MapView({ session, onStop }) {
         className="w-full h-full"
         zoomControl={false}
       >
+        <MapRefCapture mapRef={mapRef} />
         <TileLayer
           url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank">CARTO</a>'
