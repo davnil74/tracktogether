@@ -26,6 +26,7 @@ export default function MapView({ session, onStop }) {
   // Map of id → location row for all *other* users
   const [others, setOthers] = useState({})
   const [ownPos, setOwnPos] = useState(null)
+  const [ownUpdatedAt, setOwnUpdatedAt] = useState(new Date().toISOString())
   const ownPosRef = useRef(null)
 
   // Keep ref in sync so the interval closure always reads the latest position
@@ -94,10 +95,12 @@ export default function MapView({ session, onStop }) {
     const interval = setInterval(async () => {
       const pos = ownPosRef.current
       if (!pos) return
+      const updatedAt = new Date().toISOString()
       await supabase
         .from('locations')
-        .update({ lat: pos[0], lng: pos[1], updated_at: new Date().toISOString() })
+        .update({ lat: pos[0], lng: pos[1], updated_at: updatedAt })
         .eq('id', ownId)
+      setOwnUpdatedAt(updatedAt)
     }, UPDATE_INTERVAL_MS)
 
     return () => clearInterval(interval)
@@ -170,6 +173,7 @@ export default function MapView({ session, onStop }) {
               name={ownName}
               isOwn
               expiresAt={ownExpiresAt}
+              updatedAt={ownUpdatedAt}
             />
           </>
         )}
@@ -181,6 +185,7 @@ export default function MapView({ session, onStop }) {
             name={user.name}
             isOwn={false}
             expiresAt={user.expires_at}
+            updatedAt={user.updated_at}
           />
         ))}
       </MapContainer>
