@@ -62,14 +62,15 @@ export default function MapView({ session, onStop }) {
   const [toasts, setToasts] = useState([])
   const ownPosRef = useRef(null)
   const mapRef = useRef(null)
+  const markersRef = useRef({}) // userId → Leaflet marker instance
   // Track which IDs were present at mount so we don't toast for them
   const initialIdsRef = useRef(null)
 
   useEffect(() => { ownPosRef.current = ownPos }, [ownPos])
 
-  const addToast = (message, color, userPos) => {
+  const addToast = (message, color, userPos, userId) => {
     const id = Date.now() + Math.random()
-    setToasts(prev => [...prev, { id, message, color, userPos }])
+    setToasts(prev => [...prev, { id, message, color, userPos, userId }])
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), TOAST_DURATION_MS)
   }
 
@@ -77,10 +78,15 @@ export default function MapView({ session, onStop }) {
     const map = mapRef.current
     const own = ownPosRef.current
     if (!map || !toast.userPos) return
-    const bounds = own
-      ? [own, toast.userPos]
-      : [toast.userPos, toast.userPos]
+
+    const bounds = own ? [own, toast.userPos] : [toast.userPos, toast.userPos]
     map.fitBounds(bounds, { padding: [64, 64], maxZoom: 16, animate: true })
+
+    if (toast.userId) {
+      setActiveUserId(toast.userId)
+      // Open popup after pan/zoom animation settles (~300 ms)
+      setTimeout(() => markersRef.current[toast.userId]?.openPopup(), 350)
+    }
   }
 
   // ── 1. Fetch current users on mount ─────────────────────────────────────
@@ -117,7 +123,7 @@ export default function MapView({ session, onStop }) {
             setOthers(prev => {
               if (!prev[oldRow.id]) return prev
               const u = prev[oldRow.id]
-              addToast(`${u.name} stopped sharing`, '#f87171', [u.lat, u.lng])
+              addToast(`${u.name} stopped sharing`, '#f87171', [u.lat, u.lng], u.id)
               const next = { ...prev }
               delete next[oldRow.id]
               return next
@@ -131,7 +137,7 @@ export default function MapView({ session, onStop }) {
           setOthers(prev => {
             const isNew = !prev[newRow.id]
             if (isNew && initialIdsRef.current !== null && !initialIdsRef.current.has(newRow.id)) {
-              addToast(`${newRow.name} joined`, '#34d399', [newRow.lat, newRow.lng])
+              addToast(`${newRow.name} joined`, '#34d399', [newRow.lat, newRow.lng], newRow.id)
             }
             const prevHistory = prev[newRow.id]?.history ?? []
             const history = [
@@ -269,6 +275,7 @@ export default function MapView({ session, onStop }) {
             userHistory={user.history}
             ownPos={ownPos}
             ownHistory={ownHistory}
+            onMarkerReady={m => { markersRef.current[user.id] = m }}
             onPopupOpen={() => setActiveUserId(user.id)}
             onPopupClose={() => setActiveUserId(null)}
           />

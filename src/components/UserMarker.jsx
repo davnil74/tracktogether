@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Marker, Popup } from 'react-leaflet'
 import L from 'leaflet'
 
@@ -192,10 +192,15 @@ function LiveAgo({ updatedAt }) {
 export default function UserMarker({
   position, name, isOwn, expiresAt, updatedAt,
   // Only passed for non-own markers:
-  ownPos, ownHistory, userHistory, onPopupOpen, onPopupClose,
+  ownPos, ownHistory, userHistory, onMarkerReady, onPopupOpen, onPopupClose,
 }) {
-  const color   = isOwn ? '#3b82f6' : nameToColor(name)
-  const initial = name.charAt(0).toUpperCase()
+  const color     = isOwn ? '#3b82f6' : nameToColor(name)
+  const initial   = name.charAt(0).toUpperCase()
+  const markerRef = useRef(null)
+
+  useEffect(() => {
+    if (onMarkerReady && markerRef.current) onMarkerReady(markerRef.current)
+  }, []) // runs once on mount; ref is populated by then
 
   const icon = useMemo(() => {
     if (isOwn) {
@@ -223,6 +228,7 @@ export default function UserMarker({
 
   return (
     <Marker
+      ref={markerRef}
       position={position}
       icon={icon}
       eventHandlers={{ popupopen: onPopupOpen, popupclose: onPopupClose }}
