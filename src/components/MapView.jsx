@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { MapContainer, Polyline, TileLayer, useMap } from 'react-leaflet'
 import { supabase } from '../supabase'
 import UserMarker from './UserMarker'
+import UsersList from './UsersList'
 
 const UPDATE_INTERVAL_MS = 10_000
 const HISTORY_SIZE = 3
@@ -60,6 +61,7 @@ export default function MapView({ session, onStop }) {
   const [ownUpdatedAt, setOwnUpdatedAt] = useState(new Date().toISOString())
   const [activeUserId, setActiveUserId] = useState(null)
   const [toasts, setToasts] = useState([])
+  const [showUsersList, setShowUsersList] = useState(false)
   const ownPosRef = useRef(null)
   const mapRef = useRef(null)
   const markersRef = useRef({}) // userId → Leaflet marker instance
@@ -74,19 +76,18 @@ export default function MapView({ session, onStop }) {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), TOAST_DURATION_MS)
   }
 
-  const handleToastClick = (toast) => {
+  const selectUser = (userId, userPos) => {
     const map = mapRef.current
     const own = ownPosRef.current
-    if (!map || !toast.userPos) return
-
-    const bounds = own ? [own, toast.userPos] : [toast.userPos, toast.userPos]
+    if (!map || !userPos) return
+    const bounds = own ? [own, userPos] : [userPos, userPos]
     map.fitBounds(bounds, { padding: [64, 64], maxZoom: 16, animate: true })
+    setActiveUserId(userId)
+    setTimeout(() => markersRef.current[userId]?.openPopup(), 350)
+  }
 
-    if (toast.userId) {
-      setActiveUserId(toast.userId)
-      // Open popup after pan/zoom animation settles (~300 ms)
-      setTimeout(() => markersRef.current[toast.userId]?.openPopup(), 350)
-    }
+  const handleToastClick = (toast) => {
+    selectUser(toast.userId, toast.userPos)
   }
 
   // ── 1. Fetch current users on mount ─────────────────────────────────────
@@ -208,10 +209,13 @@ export default function MapView({ session, onStop }) {
       >
         <div className="flex items-center gap-3">
           <span className="text-white font-bold text-lg tracking-tight">TrackTogether</span>
-          <span className="flex items-center gap-1.5 bg-green-500/15 text-green-400 text-xs font-semibold px-2.5 py-1 rounded-full border border-green-500/25">
+          <button
+            onClick={() => setShowUsersList(true)}
+            className="flex items-center gap-1.5 bg-green-500/15 hover:bg-green-500/25 active:bg-green-500/30 text-green-400 text-xs font-semibold px-2.5 py-1 rounded-full border border-green-500/25 transition-colors"
+          >
             <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
             {onlineCount} online
-          </span>
+          </button>
         </div>
 
         <button
@@ -227,6 +231,16 @@ export default function MapView({ session, onStop }) {
 
       {/* ── Join / leave toasts ── */}
       <Toasts toasts={toasts} onToastClick={handleToastClick} />
+
+      {/* ── Users list sheet ── */}
+      {showUsersList && (
+        <UsersList
+          users={visibleOthers}
+          ownPos={ownPos}
+          onSelect={user => selectUser(user.id, [user.lat, user.lng])}
+          onClose={() => setShowUsersList(false)}
+        />
+      )}
 
       {/* ── Map ── */}
       <MapContainer
