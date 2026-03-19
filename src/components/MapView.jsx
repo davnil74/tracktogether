@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { MapContainer, TileLayer, ZoomControl, useMap } from 'react-leaflet'
+import { MapContainer, Polyline, TileLayer, ZoomControl, useMap } from 'react-leaflet'
 import { supabase } from '../supabase'
 import UserMarker from './UserMarker'
 
@@ -29,6 +29,7 @@ export default function MapView({ session, onStop }) {
   const [ownPos, setOwnPos] = useState(null)
   const [ownHistory, setOwnHistory] = useState([])
   const [ownUpdatedAt, setOwnUpdatedAt] = useState(new Date().toISOString())
+  const [activeUserId, setActiveUserId] = useState(null)
   const ownPosRef = useRef(null)
 
   // Keep ref in sync so the interval closure always reads the latest position
@@ -192,6 +193,13 @@ export default function MapView({ session, onStop }) {
           </>
         )}
 
+        {ownPos && activeUserId && others[activeUserId] && (
+          <Polyline
+            positions={[ownPos, [others[activeUserId].lat, others[activeUserId].lng]]}
+            pathOptions={{ color: '#60a5fa', weight: 2, dashArray: '8 5', opacity: 0.8 }}
+          />
+        )}
+
         {visibleOthers.map(user => (
           <UserMarker
             key={user.id}
@@ -203,6 +211,8 @@ export default function MapView({ session, onStop }) {
             userHistory={user.history}
             ownPos={ownPos}
             ownHistory={ownHistory}
+            onPopupOpen={() => setActiveUserId(user.id)}
+            onPopupClose={() => setActiveUserId(null)}
           />
         ))}
       </MapContainer>

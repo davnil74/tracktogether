@@ -192,7 +192,7 @@ function LiveAgo({ updatedAt }) {
 export default function UserMarker({
   position, name, isOwn, expiresAt, updatedAt,
   // Only passed for non-own markers:
-  ownPos, ownHistory, userHistory,
+  ownPos, ownHistory, userHistory, onPopupOpen, onPopupClose,
 }) {
   const color   = isOwn ? '#3b82f6' : nameToColor(name)
   const initial = name.charAt(0).toUpperCase()
@@ -222,7 +222,11 @@ export default function UserMarker({
   }, [color, initial, isOwn])
 
   return (
-    <Marker position={position} icon={icon}>
+    <Marker
+      position={position}
+      icon={icon}
+      eventHandlers={{ popupopen: onPopupOpen, popupclose: onPopupClose }}
+    >
       <Popup>
         <div style={{ minWidth: 160 }}>
 
