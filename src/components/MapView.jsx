@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { MapContainer, Polyline, TileLayer, ZoomControl, useMap } from 'react-leaflet'
+import { MapContainer, Polyline, TileLayer, useMap } from 'react-leaflet'
 import { supabase } from '../supabase'
 import UserMarker from './UserMarker'
 
 const UPDATE_INTERVAL_MS = 10_000
 const HISTORY_SIZE = 3
+const TOAST_DURATION_MS = 4_000
 
 /** Re-centers the map on first GPS fix only */
 function MapFlyTo({ position }) {
@@ -21,19 +22,49 @@ function MapFlyTo({ position }) {
   return null
 }
 
+/** Stacked join/leave toasts rendered above the map */
+function Toasts({ toasts }) {
+  if (!toasts.length) return null
+  return (
+    <div className="absolute left-1/2 -translate-x-1/2 z-[1001] flex flex-col items-center gap-2 pointer-events-none"
+      style={{ top: 'calc(max(12px, env(safe-area-inset-top)) + 56px)' }}
+    >
+      {toasts.map(t => (
+        <div
+          key={t.id}
+          className="flex items-center gap-2 bg-gray-900/95 border border-gray-700 text-white text-sm font-medium px-4 py-2.5 rounded-2xl shadow-xl backdrop-blur-md animate-toast"
+        >
+          <span
+            className="w-2 h-2 rounded-full shrink-0"
+            style={{ background: t.color }}
+          />
+          {t.message}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function MapView({ session, onStop }) {
   const { id: ownId, name: ownName, expiresAt: ownExpiresAt } = session
 
-  // Map of id → { ...locationRow, history: [{lat, lng, ts}] }
   const [others, setOthers] = useState({})
   const [ownPos, setOwnPos] = useState(null)
   const [ownHistory, setOwnHistory] = useState([])
   const [ownUpdatedAt, setOwnUpdatedAt] = useState(new Date().toISOString())
   const [activeUserId, setActiveUserId] = useState(null)
+  const [toasts, setToasts] = useState([])
   const ownPosRef = useRef(null)
+  // Track which IDs were present at mount so we don't toast for them
+  const initialIdsRef = useRef(null)
 
-  // Keep ref in sync so the interval closure always reads the latest position
   useEffect(() => { ownPosRef.current = ownPos }, [ownPos])
+
+  const addToast = (message, color) => {
+    const id = Date.now() + Math.random()
+    setToasts(prev => [...prev, { id, message, color }])
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), TOAST_DURATION_MS)
+  }
 
   // ── 1. Fetch current users on mount ─────────────────────────────────────
   useEffect(() => {
@@ -51,6 +82,7 @@ export default function MapView({ session, onStop }) {
           map[row.id] = { ...row, history: [{ lat: row.lat, lng: row.lng, ts: Date.now() }] }
         }
       }
+      initialIdsRef.current = new Set(Object.keys(map))
       setOthers(map)
     }
     load()
@@ -66,6 +98,8 @@ export default function MapView({ session, onStop }) {
         ({ eventType, new: newRow, old: oldRow }) => {
           if (eventType === 'DELETE') {
             setOthers(prev => {
+              if (!prev[oldRow.id]) return prev
+              addToast(`${prev[oldRow.id].name} stopped sharing`, '#f87171')
               const next = { ...prev }
               delete next[oldRow.id]
               return next
@@ -77,6 +111,10 @@ export default function MapView({ session, onStop }) {
           if (new Date(newRow.expires_at) <= new Date()) return
 
           setOthers(prev => {
+            const isNew = !prev[newRow.id]
+            if (isNew && initialIdsRef.current !== null && !initialIdsRef.current.has(newRow.id)) {
+              addToast(`${newRow.name} joined`, '#34d399')
+            }
             const prevHistory = prev[newRow.id]?.history ?? []
             const history = [
               ...prevHistory.slice(-(HISTORY_SIZE - 1)),
@@ -163,6 +201,9 @@ export default function MapView({ session, onStop }) {
         </button>
       </div>
 
+      {/* ── Join / leave toasts ── */}
+      <Toasts toasts={toasts} />
+
       {/* ── Map ── */}
       <MapContainer
         center={[20, 0]}
@@ -177,8 +218,6 @@ export default function MapView({ session, onStop }) {
           maxZoom={19}
           detectRetina
         />
-
-        <ZoomControl position="bottomright" />
 
         {ownPos && (
           <>
