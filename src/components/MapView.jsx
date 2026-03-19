@@ -4,6 +4,7 @@ import { supabase } from '../supabase'
 import UserMarker from './UserMarker'
 
 const UPDATE_INTERVAL_MS = 10_000
+const HISTORY_SIZE = 3
 
 /** Re-centers the map on first GPS fix only */
 function MapFlyTo({ position }) {
@@ -23,9 +24,10 @@ function MapFlyTo({ position }) {
 export default function MapView({ session, onStop }) {
   const { id: ownId, name: ownName, expiresAt: ownExpiresAt } = session
 
-  // Map of id → location row for all *other* users
+  // Map of id → { ...locationRow, history: [{lat, lng, ts}] }
   const [others, setOthers] = useState({})
   const [ownPos, setOwnPos] = useState(null)
+  const [ownHistory, setOwnHistory] = useState([])
   const [ownUpdatedAt, setOwnUpdatedAt] = useState(new Date().toISOString())
   const ownPosRef = useRef(null)
 
@@ -44,7 +46,9 @@ export default function MapView({ session, onStop }) {
 
       const map = {}
       for (const row of data) {
-        if (row.id !== ownId) map[row.id] = row
+        if (row.id !== ownId) {
+          map[row.id] = { ...row, history: [{ lat: row.lat, lng: row.lng, ts: Date.now() }] }
+        }
       }
       setOthers(map)
     }
@@ -68,11 +72,17 @@ export default function MapView({ session, onStop }) {
             return
           }
 
-          // INSERT or UPDATE — skip own row and expired rows
           if (newRow.id === ownId) return
           if (new Date(newRow.expires_at) <= new Date()) return
 
-          setOthers(prev => ({ ...prev, [newRow.id]: newRow }))
+          setOthers(prev => {
+            const prevHistory = prev[newRow.id]?.history ?? []
+            const history = [
+              ...prevHistory.slice(-(HISTORY_SIZE - 1)),
+              { lat: newRow.lat, lng: newRow.lng, ts: Date.now() },
+            ]
+            return { ...prev, [newRow.id]: { ...newRow, history } }
+          })
         }
       )
       .subscribe()
@@ -83,7 +93,14 @@ export default function MapView({ session, onStop }) {
   // ── 3. GPS watch ─────────────────────────────────────────────────────────
   useEffect(() => {
     const watchId = navigator.geolocation.watchPosition(
-      ({ coords }) => setOwnPos([coords.latitude, coords.longitude]),
+      ({ coords }) => {
+        const { latitude: lat, longitude: lng } = coords
+        setOwnPos([lat, lng])
+        setOwnHistory(prev => [
+          ...prev.slice(-(HISTORY_SIZE - 1)),
+          { lat, lng, ts: Date.now() },
+        ])
+      },
       err => console.error('GPS error', err),
       { enableHighAccuracy: true, maximumAge: 5000 }
     )
@@ -112,12 +129,11 @@ export default function MapView({ session, onStop }) {
     onStop()
   }
 
-  // Filter out locally-stale entries (edge case: realtime missed a delete)
   const now = Date.now()
   const visibleOthers = Object.values(others).filter(
     u => new Date(u.expires_at).getTime() > now
   )
-  const onlineCount = visibleOthers.length + 1 // +1 for self
+  const onlineCount = visibleOthers.length + 1
 
   return (
     <div className="relative w-full h-screen">
@@ -127,7 +143,6 @@ export default function MapView({ session, onStop }) {
         className="absolute top-0 left-0 right-0 z-[1000] flex items-center justify-between px-4 bg-gray-900/90 backdrop-blur-md border-b border-gray-800"
         style={{ paddingTop: 'max(12px, env(safe-area-inset-top))', paddingBottom: 12 }}
       >
-        {/* Left: app name + counter */}
         <div className="flex items-center gap-3">
           <span className="text-white font-bold text-lg tracking-tight">TrackTogether</span>
           <span className="flex items-center gap-1.5 bg-green-500/15 text-green-400 text-xs font-semibold px-2.5 py-1 rounded-full border border-green-500/25">
@@ -136,7 +151,6 @@ export default function MapView({ session, onStop }) {
           </span>
         </div>
 
-        {/* Right: stop button */}
         <button
           onClick={handleStop}
           className="flex items-center gap-1.5 bg-red-500/15 hover:bg-red-500/30 active:bg-red-500/40 text-red-400 border border-red-500/25 px-3 py-1.5 rounded-xl text-sm font-semibold transition-colors"
@@ -186,6 +200,9 @@ export default function MapView({ session, onStop }) {
             isOwn={false}
             expiresAt={user.expires_at}
             updatedAt={user.updated_at}
+            userHistory={user.history}
+            ownPos={ownPos}
+            ownHistory={ownHistory}
           />
         ))}
       </MapContainer>

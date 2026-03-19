@@ -2,62 +2,199 @@ import { useEffect, useMemo, useState } from 'react'
 import { Marker, Popup } from 'react-leaflet'
 import L from 'leaflet'
 
-/** Deterministic hue from a string */
+// ── Color helpers ────────────────────────────────────────────────────────────
+
 function nameToColor(name) {
   let hash = 0
   for (let i = 0; i < name.length; i++) {
     hash = name.charCodeAt(i) + ((hash << 5) - hash)
   }
-  const hue = Math.abs(hash) % 360
-  return `hsl(${hue}, 65%, 55%)`
+  return `hsl(${Math.abs(hash) % 360}, 65%, 55%)`
 }
 
-/** Human-readable time remaining until expiry */
+// ── Time / distance formatters ───────────────────────────────────────────────
+
 function timeRemaining(expiresAt) {
   const diff = new Date(expiresAt) - Date.now()
   if (diff <= 0) return 'expired'
-  const totalMins = Math.floor(diff / 60000)
-  if (totalMins < 1) return 'less than a minute'
-  if (totalMins < 60) return `${totalMins} min`
-  const h = Math.floor(totalMins / 60)
-  const m = totalMins % 60
-  return m > 0 ? `${h}h ${m}m` : `${h}h`
+  const m = Math.floor(diff / 60000)
+  if (m < 1) return 'less than a minute'
+  if (m < 60) return `${m} min`
+  const h = Math.floor(m / 60)
+  const rem = m % 60
+  return rem > 0 ? `${h}h ${rem}m` : `${h}h`
 }
 
-/** Human-readable elapsed time since a timestamp */
 function timeAgo(ts) {
   if (!ts) return 'unknown'
-  const secs = Math.floor((Date.now() - new Date(ts)) / 1000)
-  if (secs < 10)  return 'just now'
-  if (secs < 60)  return `${secs}s ago`
-  const mins = Math.floor(secs / 60)
-  if (mins < 60)  return `${mins} min ago`
-  const hrs = Math.floor(mins / 60)
-  return hrs === 1 ? '1 hour ago' : `${hrs} hours ago`
+  const s = Math.floor((Date.now() - new Date(ts)) / 1000)
+  if (s < 10) return 'just now'
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} min ago`
+  const h = Math.floor(m / 60)
+  return h === 1 ? '1 hour ago' : `${h} hours ago`
 }
 
-/** Absolute time formatted as HH:MM */
 function formatTime(ts) {
   if (!ts) return ''
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-/** Re-renders every 30 s so relative times stay fresh while popup is open */
+function formatDist(m) {
+  if (m < 1000) return `${Math.round(m)} m`
+  return `${(m / 1000).toFixed(1)} km`
+}
+
+function formatETA(secs) {
+  if (secs < 60) return `~${Math.round(secs)}s`
+  if (secs < 3600) return `~${Math.round(secs / 60)} min`
+  const h = Math.floor(secs / 3600)
+  const m = Math.round((secs % 3600) / 60)
+  return m > 0 ? `~${h}h ${m}m` : `~${h}h`
+}
+
+// ── Movement math ────────────────────────────────────────────────────────────
+
+/**
+ * Returns velocity {vx, vy} in m/s (east, north) from a position history array.
+ * Needs at least 2 points separated by ≥ 2 s.
+ */
+function computeVelocity(history) {
+  if (!history || history.length < 2) return null
+  const p1 = history[history.length - 2]
+  const p2 = history[history.length - 1]
+  const dt = (p2.ts - p1.ts) / 1000
+  if (dt < 2) return null
+  const latMid = (p1.lat + p2.lat) / 2
+  const mPerLng = Math.cos(latMid * Math.PI / 180) * 111_320
+  return {
+    vx: (p2.lng - p1.lng) * mPerLng / dt,   // east  m/s
+    vy: (p2.lat - p1.lat) * 111_320    / dt, // north m/s
+  }
+}
+
+/**
+ * Given own and other positions (as [lat, lng]) and velocities ({vx, vy} m/s),
+ * returns:
+ *   dist        – current distance in metres
+ *   approaching – true | false | null (null = no velocity data yet)
+ *   etaSecs     – seconds to closest approach (if approaching)
+ *   closingSpeed – m/s closing in (if approaching)
+ *   divergeSpeed – m/s moving apart (if not approaching)
+ */
+function computeETA(ownPos, ownVel, otherPos, otherVel) {
+  const latMid = (ownPos[0] + otherPos[0]) / 2
+  const mPerLng = Math.cos(latMid * Math.PI / 180) * 111_320
+
+  // Vector from own → other (metres)
+  const dx = (otherPos[1] - ownPos[1]) * mPerLng
+  const dy = (otherPos[0] - ownPos[0]) * 111_320
+  const dist = Math.sqrt(dx * dx + dy * dy)
+
+  if (!ownVel || !otherVel) return { dist, approaching: null }
+
+  // Relative velocity: other relative to own
+  const vrx = otherVel.vx - ownVel.vx
+  const vry = otherVel.vy - ownVel.vy
+
+  // Closing speed = –d(dist)/dt = –D̂ · Vrel
+  const closingSpeed = dist > 0.5
+    ? -(dx / dist * vrx + dy / dist * vry)
+    : 0
+
+  if (closingSpeed < 0.1) {
+    return { dist, approaching: false, divergeSpeed: Math.max(0, -closingSpeed) }
+  }
+
+  // Time of closest approach using full quadratic solution
+  const vRelSq = vrx * vrx + vry * vry
+  const tClosest = vRelSq > 0 ? -(dx * vrx + dy * vry) / vRelSq : dist / closingSpeed
+
+  return { dist, approaching: true, etaSecs: Math.max(0, tClosest), closingSpeed }
+}
+
+// ── Popup sub-components ─────────────────────────────────────────────────────
+
+function PopupRow({ label, value, sub, color }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 5 }}>
+      <span style={{
+        fontSize: 9, color: '#6b7280', textTransform: 'uppercase',
+        letterSpacing: '0.06em', fontWeight: 700, paddingTop: 2, minWidth: 54,
+      }}>
+        {label}
+      </span>
+      <div>
+        <span style={{ fontSize: 12, color: color ?? '#d1d5db' }}>{value}</span>
+        {sub && <div style={{ fontSize: 11, color: '#6b7280', marginTop: 1 }}>{sub}</div>}
+      </div>
+    </div>
+  )
+}
+
+/** Refreshes every 10 s while the popup is open so ETA stays current. */
+function ETASection({ ownPos, ownHistory, otherPos, userHistory }) {
+  const [, tick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => tick(n => n + 1), 10_000)
+    return () => clearInterval(id)
+  }, [])
+
+  if (!ownPos) return null
+
+  const ownVel   = computeVelocity(ownHistory)
+  const otherVel = computeVelocity(userHistory)
+  const { dist, approaching, etaSecs, closingSpeed, divergeSpeed } =
+    computeETA(ownPos, ownVel, otherPos, otherVel)
+
+  return (
+    <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #374151' }}>
+      <PopupRow label="Distance" value={formatDist(dist)} />
+
+      {approaching === null && (
+        <PopupRow label="ETA" value="collecting data…" color="#6b7280" />
+      )}
+
+      {approaching === true && (
+        <PopupRow
+          label="ETA"
+          value={etaSecs > 14_400 ? '> 4 h' : formatETA(etaSecs)}
+          color="#34d399"
+          sub={`closing at ${(closingSpeed * 3.6).toFixed(1)} km/h`}
+        />
+      )}
+
+      {approaching === false && (
+        <PopupRow
+          label="ETA"
+          value="moving apart"
+          color="#f87171"
+          sub={divergeSpeed > 0.1 ? `${(divergeSpeed * 3.6).toFixed(1)} km/h away` : undefined}
+        />
+      )}
+    </div>
+  )
+}
+
+/** Re-renders every 30 s so "X min ago" text stays fresh. */
 function LiveAgo({ updatedAt }) {
   const [, tick] = useState(0)
   useEffect(() => {
     const id = setInterval(() => tick(n => n + 1), 30_000)
     return () => clearInterval(id)
   }, [])
-  return (
-    <span>
-      {formatTime(updatedAt)} &middot; {timeAgo(updatedAt)}
-    </span>
-  )
+  return <span>{formatTime(updatedAt)} &middot; {timeAgo(updatedAt)}</span>
 }
 
-export default function UserMarker({ position, name, isOwn, expiresAt, updatedAt }) {
-  const color = isOwn ? '#3b82f6' : nameToColor(name)
+// ── Main component ───────────────────────────────────────────────────────────
+
+export default function UserMarker({
+  position, name, isOwn, expiresAt, updatedAt,
+  // Only passed for non-own markers:
+  ownPos, ownHistory, userHistory,
+}) {
+  const color   = isOwn ? '#3b82f6' : nameToColor(name)
   const initial = name.charAt(0).toUpperCase()
 
   const icon = useMemo(() => {
@@ -77,10 +214,7 @@ export default function UserMarker({ position, name, isOwn, expiresAt, updatedAt
     }
     return L.divIcon({
       className: '',
-      html: `
-        <div class="user-marker" style="background:${color};">
-          ${initial}
-        </div>`,
+      html: `<div class="user-marker" style="background:${color};">${initial}</div>`,
       iconSize: [32, 32],
       iconAnchor: [16, 16],
       popupAnchor: [0, -20],
@@ -90,31 +224,34 @@ export default function UserMarker({ position, name, isOwn, expiresAt, updatedAt
   return (
     <Marker position={position} icon={icon}>
       <Popup>
-        <div style={{ minWidth: 148 }}>
+        <div style={{ minWidth: 160 }}>
+
           {/* Name */}
-          <div style={{ fontWeight: 700, fontSize: 14, color: '#f9fafb', marginBottom: 6 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, color: '#f9fafb', marginBottom: 8 }}>
             {isOwn ? `${name} (you)` : name}
           </div>
 
           {/* Last seen */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-            <span style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
-              Last seen
-            </span>
-            <span style={{ fontSize: 12, color: '#d1d5db' }}>
-              <LiveAgo updatedAt={updatedAt} />
-            </span>
-          </div>
+          <PopupRow
+            label="Last seen"
+            value={<LiveAgo updatedAt={updatedAt} />}
+          />
 
           {/* Expires */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
-              Expires
-            </span>
-            <span style={{ fontSize: 12, color: '#d1d5db' }}>
-              {timeRemaining(expiresAt)} remaining
-            </span>
-          </div>
+          <PopupRow
+            label="Expires"
+            value={`${timeRemaining(expiresAt)} remaining`}
+          />
+
+          {/* ETA — only for other users */}
+          {!isOwn && (
+            <ETASection
+              ownPos={ownPos}
+              ownHistory={ownHistory}
+              otherPos={position}
+              userHistory={userHistory}
+            />
+          )}
         </div>
       </Popup>
     </Marker>
