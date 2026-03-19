@@ -4,7 +4,7 @@ import { supabase } from '../supabase'
 import UserMarker from './UserMarker'
 import UsersList from './UsersList'
 
-const UPDATE_INTERVAL_MS = 10_000
+const UPDATE_INTERVAL_MS = 2_000
 const HISTORY_SIZE = 3
 const TOAST_DURATION_MS = 4_000
 const MOCK_UPDATE_MS = 2_000
